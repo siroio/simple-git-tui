@@ -1,0 +1,488 @@
+use std::{
+    io::{self, Stdout},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{Receiver, Sender},
+        Arc,
+    },
+    thread,
+    time::Duration,
+};
+
+use crossterm::{
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::{
+    Frame, Terminal, backend::CrosstermBackend, layout::{Constraint, Direction, Layout, Rect}, style::{Modifier, Style}, text::{Line, Span, Text}, widgets::{Block, Borders, List, ListItem, Paragraph}
+};
+
+use ansi_to_tui::IntoText;
+
+use crate::{
+    config::Config,
+    git::{parse_lfs_mode, run_git_with_lfs, CommandResult, LfsMode},
+    theme::Theme,
+};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Focus {
+    Cmd,
+    Log,
+    Result,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Normal,
+    CommandLine,
+}
+
+pub(crate) enum UiMessage {
+    CommandFinished(CommandResult),
+}
+
+pub struct App {
+    config: Config,
+    theme: Theme,
+
+    selected_cmd: usize,
+    focus: Focus,
+    mode: Mode,
+
+    log_lines: Vec<String>,
+    result_lines: Vec<String>,
+
+    log_scroll: u16,
+    result_scroll: u16,
+    log_view_height: u16,
+    result_view_height: u16,
+
+    cmdline: String,
+
+    tx: Sender<UiMessage>,
+    rx: Receiver<UiMessage>,
+    is_running: bool,
+    cancel_flag: Arc<AtomicBool>,
+}
+
+impl App {
+    pub fn new(
+        config: Config,
+        theme: Theme,
+        tx: Sender<UiMessage>,
+        rx: Receiver<UiMessage>,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            config,
+            theme,
+            selected_cmd: 0,
+            focus: Focus::Cmd,
+            mode: Mode::Normal,
+            log_lines: vec!["<no output yet>".into()],
+            result_lines: vec![],
+            log_scroll: 0,
+            result_scroll: 0,
+            log_view_height: 1,
+            result_view_height: 1,
+            cmdline: String::new(),
+            tx,
+            rx,
+            is_running: false,
+            cancel_flag,
+        }
+    }
+
+    pub fn run(mut self) -> anyhow::Result<()> {
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen)?;
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend)?;
+
+        let res = self.event_loop(&mut terminal);
+
+        disable_raw_mode()?;
+        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+        terminal.show_cursor()?;
+
+        res
+    }
+
+    fn event_loop(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    ) -> anyhow::Result<()> {
+        loop {
+            self.poll_messages();
+            terminal.draw(|f| self.draw(f))?;
+
+            if event::poll(Duration::from_millis(50))? {
+                if let Event::Key(key) = event::read()? {
+                    // 押下のみ処理
+                    if key.kind != KeyEventKind::Press {
+                        continue;
+                    }
+
+                    let should_quit = match self.mode {
+                        Mode::Normal => self.handle_key_normal(key)?,
+                        Mode::CommandLine => self.handle_key_cmdline(key)?,
+                    };
+                    if should_quit {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn poll_messages(&mut self) {
+        while let Ok(msg) = self.rx.try_recv() {
+            match msg {
+                UiMessage::CommandFinished(res) => {
+                    if self.cancel_flag.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    self.is_running = false;
+                    self.log_lines = res.log_lines;
+                    self.result_lines = res.result_lines;
+                    self.log_scroll = 0;
+                    self.result_scroll = 0;
+                }
+            }
+        }
+    }
+
+    // ===== Normal モード =====
+    fn handle_key_normal(&mut self, key: KeyEvent) -> anyhow::Result<bool> {
+        // Ctrl+C: キャンセル
+        if key.code == KeyCode::Char('c')
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            if self.is_running {
+                self.cancel_flag.store(true, Ordering::Relaxed);
+                self.is_running = false;
+                self.log_lines.push("<canceled by user>".into());
+                self.result_lines.push(
+                    "canceled by user (git process may still finish in background)".into(),
+                );
+            }
+            return Ok(false);
+        }
+
+        // ":" でコマンドラインモード
+        if let KeyCode::Char(':') = key.code {
+            self.mode = Mode::CommandLine;
+            self.cmdline.clear();
+            return Ok(false);
+        }
+
+        // q で終了
+        if let KeyCode::Char('q') = key.code {
+            return Ok(true);
+        }
+
+        // フォーカス移動（ここで打ち切る）
+        match key.code {
+            KeyCode::Char('h') => {
+                self.focus = match self.focus {
+                    Focus::Cmd => Focus::Cmd,
+                    Focus::Log => Focus::Cmd,
+                    Focus::Result => Focus::Log,
+                };
+                return Ok(false);
+            }
+            KeyCode::Char('l') => {
+                self.focus = match self.focus {
+                    Focus::Cmd => Focus::Log,
+                    Focus::Log => Focus::Result,
+                    Focus::Result => Focus::Result,
+                };
+                return Ok(false);
+            }
+            _ => {}
+        }
+
+        // フォーカス別処理
+        match self.focus {
+            Focus::Cmd => self.handle_cmd_keys(key)?,
+            Focus::Log => self.handle_scroll_keys(key, true)?,
+            Focus::Result => self.handle_scroll_keys(key, false)?,
+        }
+
+        Ok(false)
+    }
+
+    // ===== ":" コマンドライン =====
+    fn handle_key_cmdline(&mut self, key: KeyEvent) -> anyhow::Result<bool> {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.cmdline.clear();
+            }
+            KeyCode::Enter => {
+                let line = self.cmdline.trim().to_string();
+                self.cmdline.clear();
+                self.mode = Mode::Normal;
+
+                if line.is_empty() {
+                    return Ok(false);
+                }
+
+                if line == "q" || line == "quit" {
+                    return Ok(true);
+                }
+
+                // ":" からのコマンドは LFS 拡張なし
+                self.run_command_async(line, LfsMode::None);
+            }
+            KeyCode::Backspace => {
+                self.cmdline.pop();
+            }
+            KeyCode::Char(c) => {
+                self.cmdline.push(c);
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    // ===== CMD ペイン =====
+    fn handle_cmd_keys(&mut self, key: KeyEvent) -> anyhow::Result<()> {
+        match key.code {
+            KeyCode::Char('j') => {
+                if self.selected_cmd + 1 < self.config.commands.len() {
+                    self.selected_cmd += 1;
+                }
+            }
+            KeyCode::Char('k') => {
+                if self.selected_cmd > 0 {
+                    self.selected_cmd -= 1;
+                }
+            }
+            KeyCode::Enter => {
+                self.run_selected_command();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    // ===== LOG / RESULT スクロール =====
+    fn handle_scroll_keys(&mut self, key: KeyEvent, is_log: bool) -> anyhow::Result<()> {
+        let (view_h, lines_len, scroll_ref) = if is_log {
+            (self.log_view_height, self.log_lines.len(), &mut self.log_scroll)
+        } else {
+            (
+                self.result_view_height,
+                self.result_lines.len(),
+                &mut self.result_scroll,
+            )
+        };
+
+        let max_scroll = lines_len.saturating_sub(view_h as usize) as i32;
+        let mut scroll = *scroll_ref as i32;
+
+        let half = (view_h / 2).max(1) as i32;
+        let full = view_h.max(1) as i32;
+
+        match key.code {
+            KeyCode::PageDown => {
+                scroll += full;
+            }
+            KeyCode::PageUp => {
+                scroll -= full;
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                scroll += half;
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                scroll -= half;
+            }
+            _ => {}
+        }
+
+        if scroll < 0 {
+            scroll = 0;
+        }
+        if scroll > max_scroll {
+            scroll = max_scroll;
+        }
+
+        *scroll_ref = scroll as u16;
+        Ok(())
+    }
+
+    // ===== git 実行（非同期） =====
+    fn run_selected_command(&mut self) {
+        if self.config.commands.is_empty() {
+            return;
+        }
+        let cmd_str = self.config.commands[self.selected_cmd].cmd.clone();
+        let lfs_mode = parse_lfs_mode(self.config.commands[self.selected_cmd].lfs.as_ref());
+        self.run_command_async(cmd_str, lfs_mode);
+    }
+
+    fn run_command_async(&mut self, args_str: String, lfs_mode: LfsMode) {
+        if self.is_running {
+            self.result_lines
+                .push("WARN: already running command".into());
+            return;
+        }
+        self.is_running = true;
+
+        // キャンセル解除
+        self.cancel_flag.store(false, Ordering::Relaxed);
+
+        self.log_lines = vec!["<running...>".into()];
+        self.result_lines = vec![format!("$ git {}", args_str), "running...".into()];
+        self.log_scroll = 0;
+        self.result_scroll = 0;
+
+        let tx = self.tx.clone();
+        let git_path = self.config.git_path.clone();
+        let repo_path = self.config.repo_path.clone();
+        let cancel_flag = self.cancel_flag.clone();
+
+        thread::spawn(move || {
+            let res = run_git_with_lfs(git_path, repo_path, args_str, lfs_mode, cancel_flag.clone());
+            if !cancel_flag.load(Ordering::Relaxed) {
+                let _ = tx.send(UiMessage::CommandFinished(res));
+            }
+        });
+    }
+
+    // ===== 描画 =====
+    fn draw(&mut self, f: &mut Frame) {
+        let size = f.area();
+
+        let vertical = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(3), Constraint::Length(7)].as_ref())
+            .split(size);
+
+        let top = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(30), Constraint::Min(10)].as_ref())
+            .split(vertical[0]);
+
+        self.log_view_height = top[1].height.saturating_sub(2);
+        self.result_view_height = vertical[1].height.saturating_sub(2);
+
+        // CMD ペイン
+        let cmd_items: Vec<ListItem> = self
+            .config
+            .commands
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let marker = if i == self.selected_cmd { "> " } else { "  " };
+                let style = if i == self.selected_cmd {
+                    Style::default()
+                        .fg(self.theme.accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(Line::from(Span::styled(
+                    format!("{}{}", marker, c.name),
+                    style,
+                )))
+            })
+            .collect();
+
+        let cmd_title = match (self.focus, self.mode) {
+            (Focus::Cmd, Mode::Normal) => "CMD [FOCUS]",
+            (Focus::Cmd, Mode::CommandLine) => "CMD [FOCUS :]",
+            _ => "CMD",
+        };
+
+        let cmd_border_style = if matches!(self.focus, Focus::Cmd) {
+            Style::default().fg(self.theme.accent)
+        } else {
+            Style::default()
+        };
+
+        let cmd_list = List::new(cmd_items).block(
+            Block::default()
+                .title(cmd_title)
+                .borders(Borders::ALL)
+                .border_style(cmd_border_style),
+        );
+        f.render_widget(cmd_list, top[0]);
+
+        // LOG ペイン
+        let log_title = match (self.focus, self.mode) {
+            (Focus::Log, Mode::Normal) => "LOG [FOCUS]",
+            (Focus::Log, Mode::CommandLine) => "LOG [FOCUS :]",
+            _ => "LOG",
+        };
+
+        let log_border_style = if matches!(self.focus, Focus::Log) {
+            Style::default().fg(self.theme.accent)
+        } else {
+            Style::default()
+        };
+
+        let log_raw = self.log_lines.join("\n");
+        let log_text: Text = log_raw 
+            .as_str()
+            .into_text()
+            .unwrap_or_else(|_| Text::raw(log_raw));
+
+        let log_widget = Paragraph::new(log_text)
+            .block(
+                Block::default()
+                    .title(log_title)
+                    .borders(Borders::ALL)
+                    .border_style(log_border_style),
+            )
+            .scroll((self.log_scroll, 0));
+        f.render_widget(log_widget, top[1]);
+
+        // RESULT ペイン
+        let r_title = match (self.focus, self.mode) {
+            (Focus::Result, Mode::Normal) => "R [FOCUS]",
+            (Focus::Result, Mode::CommandLine) => "R [FOCUS :]",
+            _ => "R",
+        };
+
+        let r_border_style = if matches!(self.focus, Focus::Result) {
+            Style::default().fg(self.theme.accent)
+        } else {
+            Style::default()
+        };
+
+        let r_raw = self.result_lines.join("\n");
+        let r_text: Text = r_raw
+            .as_str()
+            .into_text()
+            .unwrap_or_else(|_| Text::raw(r_raw));
+
+        let r_widget = Paragraph::new(r_text)
+            .block(
+                Block::default()
+                    .title(r_title)
+                    .borders(Borders::ALL)
+                    .border_style(r_border_style),
+            )
+            .scroll((self.result_scroll, 0));
+        f.render_widget(r_widget, vertical[1]);
+
+        // ":" コマンドライン
+        if self.mode == Mode::CommandLine {
+            let prompt_area = Rect {
+                x: size.x,
+                y: size.y + size.height.saturating_sub(1),
+                width: size.width,
+                height: 1,
+            };
+            let line = Line::from(Span::raw(format!(":{}", self.cmdline)));
+            let prompt = Paragraph::new(line);
+            f.render_widget(prompt, prompt_area);
+        }
+    }
+}

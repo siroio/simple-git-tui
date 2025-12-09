@@ -1,0 +1,24 @@
+# config.toml
+
+# git.exe のパス（Windows の例）
+git_path = "C:\\Program Files\\Git\\bin\\git.exe"
+
+# 作業したいリポジトリのディレクトリ
+repo_path = "D:\\example"
+
+[[commands]]
+name = "Status"
+cmd  = "status -sb"
+
+[[commands]]
+name = "Graph"
+cmd  = "log --oneline --graph --decorate --all --color=always"
+
+[[commands]]
+name = "Fetch"
+cmd  = "fetch --all --prune"
+
+[[commands]]
+name = "Show Branches"
+cmd  = "branch -vv"
+
