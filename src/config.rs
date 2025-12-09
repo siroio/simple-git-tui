@@ -5,7 +5,6 @@ use serde::Deserialize;
 #[derive(Deserialize, Debug)]
 pub struct Config {
     pub git_path: String,
-    pub repo_path: String,
     #[serde(default)]
     pub colors: ColorConfig,
     pub commands: Vec<CommandConfig>,

@@ -1,3 +1,4 @@
+
 use std::{
     io::{self, Stdout},
     sync::{
@@ -9,16 +10,20 @@ use std::{
     time::Duration,
 };
 
+use ansi_to_tui::IntoText;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
-    Frame, Terminal, backend::CrosstermBackend, layout::{Constraint, Direction, Layout, Rect}, style::{Modifier, Style}, text::{Line, Span, Text}, widgets::{Block, Borders, List, ListItem, Paragraph}
+    backend::CrosstermBackend,
+    layout::{Constraint, Direction, Layout},
+    style::{Modifier, Style},
+    text::{Line, Span, Text},
+    widgets::{Block, Borders, List, ListItem, Paragraph},
+    Frame, Terminal,
 };
-
-use ansi_to_tui::IntoText;
 
 use crate::{
     config::Config,
@@ -46,21 +51,16 @@ pub(crate) enum UiMessage {
 pub struct App {
     config: Config,
     theme: Theme,
-
     selected_cmd: usize,
     focus: Focus,
     mode: Mode,
-
     log_lines: Vec<String>,
     result_lines: Vec<String>,
-
     log_scroll: u16,
     result_scroll: u16,
     log_view_height: u16,
     result_view_height: u16,
-
     cmdline: String,
-
     tx: Sender<UiMessage>,
     rx: Receiver<UiMessage>,
     is_running: bool,
@@ -101,13 +101,10 @@ impl App {
         execute!(stdout, EnterAlternateScreen)?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
-
         let res = self.event_loop(&mut terminal);
-
         disable_raw_mode()?;
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
         terminal.show_cursor()?;
-
         res
     }
 
@@ -118,14 +115,11 @@ impl App {
         loop {
             self.poll_messages();
             terminal.draw(|f| self.draw(f))?;
-
             if event::poll(Duration::from_millis(50))? {
                 if let Event::Key(key) = event::read()? {
-                    // 押下のみ処理
                     if key.kind != KeyEventKind::Press {
                         continue;
                     }
-
                     let should_quit = match self.mode {
                         Mode::Normal => self.handle_key_normal(key)?,
                         Mode::CommandLine => self.handle_key_cmdline(key)?,
@@ -156,36 +150,28 @@ impl App {
         }
     }
 
-    // ===== Normal モード =====
     fn handle_key_normal(&mut self, key: KeyEvent) -> anyhow::Result<bool> {
-        // Ctrl+C: キャンセル
-        if key.code == KeyCode::Char('c')
-            && key.modifiers.contains(KeyModifiers::CONTROL)
-        {
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             if self.is_running {
                 self.cancel_flag.store(true, Ordering::Relaxed);
                 self.is_running = false;
                 self.log_lines.push("<canceled by user>".into());
-                self.result_lines.push(
-                    "canceled by user (git process may still finish in background)".into(),
-                );
+                self.result_lines
+                    .push("canceled by user (git process may still finish in background)".into());
             }
             return Ok(false);
         }
 
-        // ":" でコマンドラインモード
         if let KeyCode::Char(':') = key.code {
             self.mode = Mode::CommandLine;
             self.cmdline.clear();
             return Ok(false);
         }
 
-        // q で終了
         if let KeyCode::Char('q') = key.code {
             return Ok(true);
         }
 
-        // フォーカス移動（ここで打ち切る）
         match key.code {
             KeyCode::Char('h') => {
                 self.focus = match self.focus {
@@ -206,7 +192,6 @@ impl App {
             _ => {}
         }
 
-        // フォーカス別処理
         match self.focus {
             Focus::Cmd => self.handle_cmd_keys(key)?,
             Focus::Log => self.handle_scroll_keys(key, true)?,
@@ -216,7 +201,6 @@ impl App {
         Ok(false)
     }
 
-    // ===== ":" コマンドライン =====
     fn handle_key_cmdline(&mut self, key: KeyEvent) -> anyhow::Result<bool> {
         match key.code {
             KeyCode::Esc => {
@@ -227,16 +211,12 @@ impl App {
                 let line = self.cmdline.trim().to_string();
                 self.cmdline.clear();
                 self.mode = Mode::Normal;
-
                 if line.is_empty() {
                     return Ok(false);
                 }
-
                 if line == "q" || line == "quit" {
                     return Ok(true);
                 }
-
-                // ":" からのコマンドは LFS 拡張なし
                 self.run_command_async(line, LfsMode::None);
             }
             KeyCode::Backspace => {
@@ -250,7 +230,6 @@ impl App {
         Ok(false)
     }
 
-    // ===== CMD ペイン =====
     fn handle_cmd_keys(&mut self, key: KeyEvent) -> anyhow::Result<()> {
         match key.code {
             KeyCode::Char('j') => {
@@ -271,7 +250,6 @@ impl App {
         Ok(())
     }
 
-    // ===== LOG / RESULT スクロール =====
     fn handle_scroll_keys(&mut self, key: KeyEvent, is_log: bool) -> anyhow::Result<()> {
         let (view_h, lines_len, scroll_ref) = if is_log {
             (self.log_view_height, self.log_lines.len(), &mut self.log_scroll)
@@ -285,7 +263,6 @@ impl App {
 
         let max_scroll = lines_len.saturating_sub(view_h as usize) as i32;
         let mut scroll = *scroll_ref as i32;
-
         let half = (view_h / 2).max(1) as i32;
         let full = view_h.max(1) as i32;
 
@@ -316,7 +293,6 @@ impl App {
         Ok(())
     }
 
-    // ===== git 実行（非同期） =====
     fn run_selected_command(&mut self) {
         if self.config.commands.is_empty() {
             return;
@@ -333,10 +309,7 @@ impl App {
             return;
         }
         self.is_running = true;
-
-        // キャンセル解除
         self.cancel_flag.store(false, Ordering::Relaxed);
-
         self.log_lines = vec!["<running...>".into()];
         self.result_lines = vec![format!("$ git {}", args_str), "running...".into()];
         self.log_scroll = 0;
@@ -344,24 +317,22 @@ impl App {
 
         let tx = self.tx.clone();
         let git_path = self.config.git_path.clone();
-        let repo_path = self.config.repo_path.clone();
         let cancel_flag = self.cancel_flag.clone();
 
         thread::spawn(move || {
-            let res = run_git_with_lfs(git_path, repo_path, args_str, lfs_mode, cancel_flag.clone());
+            let res = run_git_with_lfs(git_path, args_str, lfs_mode, cancel_flag.clone());
             if !cancel_flag.load(Ordering::Relaxed) {
                 let _ = tx.send(UiMessage::CommandFinished(res));
             }
         });
     }
 
-    // ===== 描画 =====
     fn draw(&mut self, f: &mut Frame) {
         let size = f.area();
 
         let vertical = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(3), Constraint::Length(7)].as_ref())
+            .constraints([Constraint::Min(6), Constraint::Length(1)].as_ref())
             .split(size);
 
         let top = Layout::default()
@@ -369,10 +340,21 @@ impl App {
             .constraints([Constraint::Length(30), Constraint::Min(10)].as_ref())
             .split(vertical[0]);
 
-        self.log_view_height = top[1].height.saturating_sub(2);
-        self.result_view_height = vertical[1].height.saturating_sub(2);
+        let cmd_area = top[0];
+        let right = top[1];
 
-        // CMD ペイン
+        let right_split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(5), Constraint::Length(5)].as_ref())
+            .split(right);
+
+        let log_area = right_split[0];
+        let result_area = right_split[1];
+        let status_area = vertical[1];
+
+        self.log_view_height = log_area.height.saturating_sub(2);
+        self.result_view_height = result_area.height.saturating_sub(2);
+
         let cmd_items: Vec<ListItem> = self
             .config
             .commands
@@ -412,9 +394,8 @@ impl App {
                 .borders(Borders::ALL)
                 .border_style(cmd_border_style),
         );
-        f.render_widget(cmd_list, top[0]);
+        f.render_widget(cmd_list, cmd_area);
 
-        // LOG ペイン
         let log_title = match (self.focus, self.mode) {
             (Focus::Log, Mode::Normal) => "LOG [FOCUS]",
             (Focus::Log, Mode::CommandLine) => "LOG [FOCUS :]",
@@ -428,7 +409,7 @@ impl App {
         };
 
         let log_raw = self.log_lines.join("\n");
-        let log_text: Text = log_raw 
+        let log_text: Text = log_raw
             .as_str()
             .into_text()
             .unwrap_or_else(|_| Text::raw(log_raw));
@@ -441,9 +422,8 @@ impl App {
                     .border_style(log_border_style),
             )
             .scroll((self.log_scroll, 0));
-        f.render_widget(log_widget, top[1]);
+        f.render_widget(log_widget, log_area);
 
-        // RESULT ペイン
         let r_title = match (self.focus, self.mode) {
             (Focus::Result, Mode::Normal) => "R [FOCUS]",
             (Focus::Result, Mode::CommandLine) => "R [FOCUS :]",
@@ -470,19 +450,32 @@ impl App {
                     .border_style(r_border_style),
             )
             .scroll((self.result_scroll, 0));
-        f.render_widget(r_widget, vertical[1]);
+        f.render_widget(r_widget, result_area);
 
-        // ":" コマンドライン
-        if self.mode == Mode::CommandLine {
-            let prompt_area = Rect {
-                x: size.x,
-                y: size.y + size.height.saturating_sub(1),
-                width: size.width,
-                height: 1,
-            };
-            let line = Line::from(Span::raw(format!(":{}", self.cmdline)));
-            let prompt = Paragraph::new(line);
-            f.render_widget(prompt, prompt_area);
-        }
+        let cwd = std::env::current_dir()
+            .ok()
+            .and_then(|p| p.to_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "?".into());
+
+        let status_line = match self.mode {
+            Mode::Normal => Line::from(vec![
+                Span::styled(
+                    " -- NORMAL -- ",
+                    Style::default().add_modifier(Modifier::REVERSED),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    format!("cwd: {}", cwd),
+                    Style::default().fg(self.theme.accent),
+                ),
+            ]),
+            Mode::CommandLine => Line::from(Span::styled(
+                format!(":{}", self.cmdline),
+                Style::default().add_modifier(Modifier::REVERSED),
+            )),
+        };
+
+        let status = Paragraph::new(status_line);
+        f.render_widget(status, status_area);
     }
 }

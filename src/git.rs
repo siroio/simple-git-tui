@@ -1,3 +1,4 @@
+use std::env;
 use std::process::Command;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -27,7 +28,6 @@ pub struct CommandResult {
 /// git + 必要なら LFS を実行（バックグラウンドスレッドから呼ばれる想定）
 pub fn run_git_with_lfs(
     git_path: String,
-    repo_path: String,
     args_str: String,
     lfs_mode: LfsMode,
     cancel_flag: Arc<AtomicBool>,
@@ -37,6 +37,8 @@ pub fn run_git_with_lfs(
 
     result_lines.push(format!("$ git {}", args_str));
 
+    let repo_path = env::current_dir().unwrap_or_else(|_| ".".into());
+    
     // メイン git
     let mut parts = args_str.split_whitespace();
     let subcmd = parts.next().unwrap_or("");

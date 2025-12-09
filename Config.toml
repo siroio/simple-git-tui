@@ -3,9 +3,6 @@
 # git.exe のパス（Windows の例）
 git_path = "C:\\Program Files\\Git\\bin\\git.exe"
 
-# 作業したいリポジトリのディレクトリ
-repo_path = "D:\\example"
-
 [[commands]]
 name = "Status"
 cmd  = "status -sb"
