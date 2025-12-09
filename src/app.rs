@@ -1,3 +1,4 @@
+
 use std::{
     io::{self, Stdout},
     process::Command,
@@ -34,6 +35,7 @@ use crate::{
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Focus {
     Cmd,
+    Files,
     Log,
     Result,
 }
@@ -48,10 +50,16 @@ pub(crate) enum UiMessage {
     CommandFinished(CommandResult),
 }
 
+struct FileEntry {
+    status: String,
+    path: String,
+}
+
 pub struct App {
     config: Config,
     theme: Theme,
     selected_cmd: usize,
+    selected_file: usize,
     focus: Focus,
     mode: Mode,
     log_lines: Vec<String>,
@@ -66,6 +74,7 @@ pub struct App {
     is_running: bool,
     cancel_flag: Arc<AtomicBool>,
     status_info: String,
+    files: Vec<FileEntry>,
 }
 
 impl App {
@@ -80,6 +89,7 @@ impl App {
             config,
             theme,
             selected_cmd: 0,
+            selected_file: 0,
             focus: Focus::Cmd,
             mode: Mode::Normal,
             log_lines: vec!["<no output yet>".into()],
@@ -94,8 +104,9 @@ impl App {
             is_running: false,
             cancel_flag,
             status_info: String::new(),
+            files: Vec::new(),
         };
-        app.refresh_status();
+        app.refresh_status_and_files();
         app
     }
 
@@ -149,7 +160,7 @@ impl App {
                     self.result_lines = res.result_lines;
                     self.log_scroll = 0;
                     self.result_scroll = 0;
-                    self.refresh_status();
+                    self.refresh_status_and_files();
                 }
             }
         }
@@ -163,7 +174,7 @@ impl App {
                 self.log_lines.push("<canceled by user>".into());
                 self.result_lines
                     .push("canceled by user (git process may still finish in background)".into());
-                self.refresh_status();
+                self.refresh_status_and_files();
             }
             return Ok(false);
         }
@@ -182,14 +193,16 @@ impl App {
             KeyCode::Char('h') => {
                 self.focus = match self.focus {
                     Focus::Cmd => Focus::Cmd,
-                    Focus::Log => Focus::Cmd,
+                    Focus::Files => Focus::Cmd,
+                    Focus::Log => Focus::Files,
                     Focus::Result => Focus::Log,
                 };
                 return Ok(false);
             }
             KeyCode::Char('l') => {
                 self.focus = match self.focus {
-                    Focus::Cmd => Focus::Log,
+                    Focus::Cmd => Focus::Files,
+                    Focus::Files => Focus::Log,
                     Focus::Log => Focus::Result,
                     Focus::Result => Focus::Result,
                 };
@@ -200,6 +213,7 @@ impl App {
 
         match self.focus {
             Focus::Cmd => self.handle_cmd_keys(key)?,
+            Focus::Files => self.handle_file_keys(key)?,
             Focus::Log => self.handle_scroll_keys(key, true)?,
             Focus::Result => self.handle_scroll_keys(key, false)?,
         }
@@ -262,6 +276,26 @@ impl App {
         Ok(())
     }
 
+    fn handle_file_keys(&mut self, key: KeyEvent) -> anyhow::Result<()> {
+        match key.code {
+            KeyCode::Char('j') => {
+                if self.selected_file + 1 < self.files.len() {
+                    self.selected_file += 1;
+                }
+            }
+            KeyCode::Char('k') => {
+                if self.selected_file > 0 {
+                    self.selected_file -= 1;
+                }
+            }
+            KeyCode::Char('s') => {
+                self.toggle_stage_selected_file();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn handle_scroll_keys(&mut self, key: KeyEvent, is_log: bool) -> anyhow::Result<()> {
         let (view_h, lines_len, scroll_ref) = if is_log {
             (self.log_view_height, self.log_lines.len(), &mut self.log_scroll)
@@ -314,6 +348,26 @@ impl App {
         self.run_command_async(cmd_str, lfs_mode);
     }
 
+    fn toggle_stage_selected_file(&mut self) {
+        if self.files.is_empty() {
+            return;
+        }
+        let entry = &self.files[self.selected_file];
+        let status = entry.status.as_str();
+        let path = entry.path.clone();
+        let mut chars = status.chars();
+        let x = chars.next().unwrap_or(' ');
+        let y = chars.next().unwrap_or(' ');
+        let is_untracked = status == "??";
+        let is_staged = x != ' ' && !is_untracked;
+        let cmd = if is_staged {
+            format!("restore --staged {}", path)
+        } else {
+            format!("add {}", path)
+        };
+        self.run_command_async(cmd, LfsMode::None);
+    }
+
     fn run_command_async(&mut self, args_str: String, lfs_mode: LfsMode) {
         if self.is_running {
             self.result_lines
@@ -339,7 +393,7 @@ impl App {
         });
     }
 
-    fn refresh_status(&mut self) {
+    fn refresh_status_and_files(&mut self) {
         let git = &self.config.git_path;
         let repo = std::env::current_dir().unwrap_or_else(|_| ".".into());
 
@@ -368,15 +422,17 @@ impl App {
         let mut staged = 0usize;
         let mut unstaged = 0usize;
         let mut untracked = 0usize;
+        let mut files = Vec::new();
 
         if let Ok(o) = status_out {
             if o.status.success() {
                 let s = String::from_utf8_lossy(&o.stdout);
                 for line in s.lines() {
-                    if line.len() < 2 {
+                    if line.len() < 3 {
                         continue;
                     }
-                    let status = &line[..2];
+                    let status = line[..2].to_string();
+                    let raw_path = line[3..].to_string();
                     if status == "??" {
                         untracked += 1;
                     } else {
@@ -389,6 +445,10 @@ impl App {
                             unstaged += 1;
                         }
                     }
+                    files.push(FileEntry {
+                        status,
+                        path: raw_path,
+                    });
                 }
             }
         }
@@ -397,6 +457,13 @@ impl App {
             "[{}] +{} ~{} ?{}",
             branch, staged, unstaged, untracked
         );
+        self.files = files;
+        if self.selected_file >= self.files.len() && !self.files.is_empty() {
+            self.selected_file = self.files.len() - 1;
+        }
+        if self.files.is_empty() {
+            self.selected_file = 0;
+        }
     }
 
     fn draw(&mut self, f: &mut Frame) {
@@ -409,11 +476,19 @@ impl App {
 
         let top = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(30), Constraint::Min(10)].as_ref())
+            .constraints([Constraint::Length(32), Constraint::Min(10)].as_ref())
             .split(vertical[0]);
 
-        let cmd_area = top[0];
+        let left = top[0];
         let right = top[1];
+
+        let left_split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(7), Constraint::Min(3)].as_ref())
+            .split(left);
+
+        let cmd_area = left_split[0];
+        let files_area = left_split[1];
 
         let right_split = Layout::default()
             .direction(Direction::Vertical)
@@ -467,6 +542,52 @@ impl App {
                 .border_style(cmd_border_style),
         );
         f.render_widget(cmd_list, cmd_area);
+
+        let file_items: Vec<ListItem> = if self.files.is_empty() {
+            vec![ListItem::new(Line::from(Span::raw(
+                "<clean or no changes>",
+            )))]
+        } else {
+            self.files
+                .iter()
+                .enumerate()
+                .map(|(i, fe)| {
+                    let marker = if i == self.selected_file { "> " } else { "  " };
+                    let status = &fe.status;
+                    let text = format!("{}[{}] {}", marker, status, fe.path);
+                    let mut style = Style::default();
+                    if i == self.selected_file {
+                        style = style
+                            .fg(self.theme.accent)
+                            .add_modifier(Modifier::BOLD);
+                    }
+                    if status == "??" {
+                        style = style.add_modifier(Modifier::ITALIC);
+                    }
+                    ListItem::new(Line::from(Span::styled(text, style)))
+                })
+                .collect()
+        };
+
+        let files_title = match (self.focus, self.mode) {
+            (Focus::Files, Mode::Normal) => "FILES [FOCUS] (s:stage/unstage)",
+            (Focus::Files, Mode::CommandLine) => "FILES [FOCUS :]",
+            _ => "FILES",
+        };
+
+        let files_border_style = if matches!(self.focus, Focus::Files) {
+            Style::default().fg(self.theme.accent)
+        } else {
+            Style::default()
+        };
+
+        let files_list = List::new(file_items).block(
+            Block::default()
+                .title(files_title)
+                .borders(Borders::ALL)
+                .border_style(files_border_style),
+        );
+        f.render_widget(files_list, files_area);
 
         let log_title = match (self.focus, self.mode) {
             (Focus::Log, Mode::Normal) => "LOG [FOCUS]",
@@ -525,17 +646,25 @@ impl App {
         f.render_widget(r_widget, result_area);
 
         let status_line = match self.mode {
-            Mode::Normal => Line::from(vec![
-                Span::styled(
-                    " -- NORMAL -- ",
-                    Style::default().add_modifier(Modifier::REVERSED),
-                ),
-                Span::raw(" "),
-                Span::styled(
-                    self.status_info.clone(),
-                    Style::default().fg(self.theme.accent),
-                ),
-            ]),
+            Mode::Normal => {
+                let cwd = std::env::current_dir()
+                    .ok()
+                    .and_then(|p| p.to_str().map(|s| s.to_string()))
+                    .unwrap_or_else(|| "?".into());
+                Line::from(vec![
+                    Span::styled(
+                        " -- NORMAL -- ",
+                        Style::default().add_modifier(Modifier::REVERSED),
+                    ),
+                    Span::raw(" "),
+                    Span::styled(
+                        self.status_info.clone(),
+                        Style::default().fg(self.theme.accent),
+                    ),
+                    Span::raw("  "),
+                    Span::raw(cwd),
+                ])
+            }
             Mode::CommandLine => Line::from(Span::styled(
                 format!(":{}", self.cmdline),
                 Style::default().add_modifier(Modifier::REVERSED),
@@ -546,4 +675,3 @@ impl App {
         f.render_widget(status, status_area);
     }
 }
-
