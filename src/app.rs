@@ -1,6 +1,6 @@
-
 use std::{
     io::{self, Stdout},
+    process::Command,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{Receiver, Sender},
@@ -65,6 +65,7 @@ pub struct App {
     rx: Receiver<UiMessage>,
     is_running: bool,
     cancel_flag: Arc<AtomicBool>,
+    status_info: String,
 }
 
 impl App {
@@ -75,7 +76,7 @@ impl App {
         rx: Receiver<UiMessage>,
         cancel_flag: Arc<AtomicBool>,
     ) -> Self {
-        Self {
+        let mut app = Self {
             config,
             theme,
             selected_cmd: 0,
@@ -92,7 +93,10 @@ impl App {
             rx,
             is_running: false,
             cancel_flag,
-        }
+            status_info: String::new(),
+        };
+        app.refresh_status();
+        app
     }
 
     pub fn run(mut self) -> anyhow::Result<()> {
@@ -145,6 +149,7 @@ impl App {
                     self.result_lines = res.result_lines;
                     self.log_scroll = 0;
                     self.result_scroll = 0;
+                    self.refresh_status();
                 }
             }
         }
@@ -158,6 +163,7 @@ impl App {
                 self.log_lines.push("<canceled by user>".into());
                 self.result_lines
                     .push("canceled by user (git process may still finish in background)".into());
+                self.refresh_status();
             }
             return Ok(false);
         }
@@ -217,7 +223,13 @@ impl App {
                 if line == "q" || line == "quit" {
                     return Ok(true);
                 }
-                self.run_command_async(line, LfsMode::None);
+                match line.as_str() {
+                    "stage" => self.run_command_async("add -A".to_string(), LfsMode::None),
+                    "unstage" => {
+                        self.run_command_async("restore --staged .".to_string(), LfsMode::None)
+                    }
+                    _ => self.run_command_async(line, LfsMode::None),
+                }
             }
             KeyCode::Backspace => {
                 self.cmdline.pop();
@@ -325,6 +337,66 @@ impl App {
                 let _ = tx.send(UiMessage::CommandFinished(res));
             }
         });
+    }
+
+    fn refresh_status(&mut self) {
+        let git = &self.config.git_path;
+        let repo = std::env::current_dir().unwrap_or_else(|_| ".".into());
+
+        let branch = Command::new(git)
+            .arg("rev-parse")
+            .arg("--abbrev-ref")
+            .arg("HEAD")
+            .current_dir(&repo)
+            .output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "?".into());
+
+        let status_out = Command::new(git)
+            .arg("status")
+            .arg("--porcelain=v1")
+            .current_dir(&repo)
+            .output();
+
+        let mut staged = 0usize;
+        let mut unstaged = 0usize;
+        let mut untracked = 0usize;
+
+        if let Ok(o) = status_out {
+            if o.status.success() {
+                let s = String::from_utf8_lossy(&o.stdout);
+                for line in s.lines() {
+                    if line.len() < 2 {
+                        continue;
+                    }
+                    let status = &line[..2];
+                    if status == "??" {
+                        untracked += 1;
+                    } else {
+                        let x = status.chars().nth(0).unwrap_or(' ');
+                        let y = status.chars().nth(1).unwrap_or(' ');
+                        if x != ' ' {
+                            staged += 1;
+                        }
+                        if y != ' ' {
+                            unstaged += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        self.status_info = format!(
+            "[{}] +{} ~{} ?{}",
+            branch, staged, unstaged, untracked
+        );
     }
 
     fn draw(&mut self, f: &mut Frame) {
@@ -452,11 +524,6 @@ impl App {
             .scroll((self.result_scroll, 0));
         f.render_widget(r_widget, result_area);
 
-        let cwd = std::env::current_dir()
-            .ok()
-            .and_then(|p| p.to_str().map(|s| s.to_string()))
-            .unwrap_or_else(|| "?".into());
-
         let status_line = match self.mode {
             Mode::Normal => Line::from(vec![
                 Span::styled(
@@ -465,7 +532,7 @@ impl App {
                 ),
                 Span::raw(" "),
                 Span::styled(
-                    format!("cwd: {}", cwd),
+                    self.status_info.clone(),
                     Style::default().fg(self.theme.accent),
                 ),
             ]),
@@ -479,3 +546,4 @@ impl App {
         f.render_widget(status, status_area);
     }
 }
+
