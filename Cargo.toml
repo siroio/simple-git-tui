@@ -10,3 +10,4 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 anyhow = "1"
 ansi-to-tui = "3"
+dirs-next = "2"
