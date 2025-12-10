@@ -1,33 +1,33 @@
 # simple-git-tui
 
-A lightweight, vim-oriented Git TUI written in Rust.
+A fast, vim-oriented Git TUI written in Rust.
 
-This tool is designed for developers who want a **fast, keyboard-driven Git workflow** with:
-- Git status / graph / branch inspection
-- Git LFS-aware fetch & pull
-- Asynchronous execution (UI never blocks)
-- Vim-style keybindings
-- Simple TOML-based configuration
+**simple-git-tui** is a lightweight, keyboard-driven Git interface inspired by  
+**Vim**, **gitui**, and other terminal-native workflows.
 
-> Tested on Windows with Git for Windows.
+It is designed for developers who want:
+- zero mouse usage
+- non-blocking Git operations
+- fast inspection and staging
+- minimal configuration
+
+> Tested on Windows (Git for Windows).  
+> Linux / macOS should work as well.
 
 ---
 
 ## Features
 
-- ✅ Vim keybindings (`hjkl`, `j/k`, `Ctrl+u/d`, `:`)
-- ✅ Git graph with color (`--decorate`, `--graph`)
-- ✅ Git LFS support (fetch / pull with real data download)
-- ✅ Non-blocking async command execution
-- ✅ Cancel running command (`Ctrl+C`)
-- ✅ ANSI color rendering in TUI
-- ✅ Configurable commands via `config.toml`
-
----
-
-## Screenshot
-
-_(Add a screenshot here once you are ready)_
+- ✅ Vim-style keybindings (`hjkl`, `j/k`, `Ctrl+u/d`, `:`)
+- ✅ Multi-pane TUI (Commands / Files / Log / Result)
+- ✅ Git status, graph, branches
+- ✅ Per-file stage / unstage UI
+- ✅ Git LFS-aware fetch & pull
+- ✅ Fully asynchronous execution (UI never blocks)
+- ✅ Cancel running commands (`Ctrl+C`)
+- ✅ ANSI color rendering inside TUI
+- ✅ Auto-generated TOML configuration
+- ✅ Works by launching **inside a Git repository**
 
 ---
 
@@ -37,20 +37,14 @@ _(Add a screenshot here once you are ready)_
 
 - Rust (latest stable)
 - Git (Git for Windows recommended)
-- Git LFS (optional, if using LFS repos)
+- Git LFS (optional)
 
 ### Build
 
 ```bash
-git clone https://github.com/yourname/simple-git-tui.git
+git clone https://github.com/siroio/simple-git-tui.git
 cd simple-git-tui
 cargo build --release
-```
-
-Binary will be created at:
-
-```
-target/release/simple-git-tui.exe
 ```
 
 ---
@@ -58,81 +52,24 @@ target/release/simple-git-tui.exe
 ## Usage
 
 ```bash
-cargo run
-# or
-./simple-git-tui.exe
-```
-
-Controls:
-
-| Key | Action |
-|---|---|
-| j / k | Move selection |
-| h / l | Change focus pane |
-| Enter | Execute selected command |
-| Ctrl+u / Ctrl+d | Scroll |
-| PgUp / PgDn | Page scroll |
-| : | Command line mode |
-| Ctrl+C | Cancel running command |
-| q | Quit |
-
----
-
-## Configuration (`config.toml`)
-
-Place `config.toml` next to the executable.
-
-Example:
-
-```toml
-git_path = "C:\\Program Files\\Git\\bin\\git.exe"
-repo_path = "D:\\YourRepo"
-
-[[commands]]
-name = "Status"
-cmd  = "status -sb --color=always"
-
-[[commands]]
-name = "Graph"
-cmd  = "log --oneline --graph --decorate --all --color=always"
-
-[[commands]]
-name = "Fetch + LFS"
-cmd  = "fetch --all --prune"
-lfs  = "fetch"
-
-[[commands]]
-name = "Pull + LFS"
-cmd  = "pull"
-lfs  = "pull"
+cd path/to/your/repo
+simple-git-tui
 ```
 
 ---
 
-## Architecture
+## Configuration
 
-```text
-src/
- ├─ main.rs     # entry point
- ├─ app.rs      # TUI + event loop
- ├─ git.rs      # git / lfs execution
- ├─ config.rs   # TOML config
- └─ theme.rs    # color theme
-```
+Config file is auto-generated on first launch.
+
+### Location
+
+- Windows: `%LOCALAPPDATA%\simple-git-tui\config.toml`
+- Linux: `~/.config/simple-git-tui/config.toml`
+- macOS: `~/Library/Application Support/simple-git-tui/config.toml`
 
 ---
 
 ## License
 
 MIT License.
-
-You are free to use, modify, and redistribute this software at your own risk.
-No warranty is provided.
-
----
-
-## Disclaimer
-
-This tool executes `git` commands directly.
-Always ensure you understand what commands are defined in `config.toml`
-before running them on important repositories.
