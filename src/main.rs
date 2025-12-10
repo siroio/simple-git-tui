@@ -1,4 +1,5 @@
 mod app;
+mod define;
 mod config;
 mod git;
 mod theme;

@@ -1,4 +1,3 @@
-
 use std::{
     io::{self, Stdout},
     process::Command,
@@ -357,13 +356,12 @@ impl App {
         let path = entry.path.clone();
         let mut chars = status.chars();
         let x = chars.next().unwrap_or(' ');
-        let y = chars.next().unwrap_or(' ');
         let is_untracked = status == "??";
         let is_staged = x != ' ' && !is_untracked;
         let cmd = if is_staged {
-            format!("restore --staged {}", path)
+            format!("restore --staged \"{}\"", path)
         } else {
-            format!("add {}", path)
+            format!("add \"{}\"", path)
         };
         self.run_command_async(cmd, LfsMode::None);
     }
@@ -411,7 +409,7 @@ impl App {
                     None
                 }
             })
-            .unwrap_or_else(|| "?".into());
+        .unwrap_or_else(|| "?".into());
 
         let status_out = Command::new(git)
             .arg("status")
@@ -469,6 +467,10 @@ impl App {
     fn draw(&mut self, f: &mut Frame) {
         let size = f.area();
 
+        let lw = self.config.layout.cmd_width as u16;
+        let fh = self.config.layout.files_height as u16;
+        let rh = self.config.layout.result_height as u16;
+
         let vertical = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(6), Constraint::Length(1)].as_ref())
@@ -476,7 +478,7 @@ impl App {
 
         let top = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(32), Constraint::Min(10)].as_ref())
+            .constraints([Constraint::Length(lw), Constraint::Min(10)].as_ref())
             .split(vertical[0]);
 
         let left = top[0];
@@ -484,7 +486,7 @@ impl App {
 
         let left_split = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(7), Constraint::Min(3)].as_ref())
+            .constraints([Constraint::Length(fh), Constraint::Min(3)].as_ref())
             .split(left);
 
         let cmd_area = left_split[0];
@@ -492,7 +494,7 @@ impl App {
 
         let right_split = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(5), Constraint::Length(5)].as_ref())
+            .constraints([Constraint::Min(5), Constraint::Length(rh)].as_ref())
             .split(right);
 
         let log_area = right_split[0];
@@ -517,11 +519,11 @@ impl App {
                     Style::default()
                 };
                 ListItem::new(Line::from(Span::styled(
-                    format!("{}{}", marker, c.name),
-                    style,
+                            format!("{}{}", marker, c.name),
+                            style,
                 )))
             })
-            .collect();
+        .collect();
 
         let cmd_title = match (self.focus, self.mode) {
             (Focus::Cmd, Mode::Normal) => "CMD [FOCUS]",
@@ -537,36 +539,63 @@ impl App {
 
         let cmd_list = List::new(cmd_items).block(
             Block::default()
-                .title(cmd_title)
-                .borders(Borders::ALL)
-                .border_style(cmd_border_style),
+            .title(cmd_title)
+            .borders(Borders::ALL)
+            .border_style(cmd_border_style),
         );
         f.render_widget(cmd_list, cmd_area);
 
         let file_items: Vec<ListItem> = if self.files.is_empty() {
             vec![ListItem::new(Line::from(Span::raw(
-                "<clean or no changes>",
+                        "<clean or no changes>",
             )))]
         } else {
             self.files
                 .iter()
                 .enumerate()
                 .map(|(i, fe)| {
-                    let marker = if i == self.selected_file { "> " } else { "  " };
-                    let status = &fe.status;
-                    let text = format!("{}[{}] {}", marker, status, fe.path);
+                    let marker = if i == self.selected_file { "▸ " } else { "  " };
+                    let status = fe.status.as_str();
+
+                    let clean_path = fe.path.replace('"', "");
+
+                    let display_name = clean_path
+                        .rsplit(|c| c == '/' || c == '\\')
+                        .next()
+                        .unwrap_or(clean_path.as_str());
+
+                    let mut chars = status.chars();
+                    let x = chars.next().unwrap_or(' ');
+                    let y = chars.next().unwrap_or(' ');
+                    let is_untracked = status == "??";
+                    let is_staged = x != ' ' && !is_untracked;
+                    let has_unstaged = y != ' ';
+
+                    let status_label = format!("[{}]", status);
+
+                    let text = format!("{}{} {}", marker, status_label, display_name);
+
                     let mut style = Style::default();
-                    if i == self.selected_file {
-                        style = style
-                            .fg(self.theme.accent)
-                            .add_modifier(Modifier::BOLD);
+
+                    if is_staged {
+                        style = style.fg(self.theme.accent);
                     }
-                    if status == "??" {
+
+                    if is_untracked {
                         style = style.add_modifier(Modifier::ITALIC);
                     }
+
+                    if i == self.selected_file {
+                        style = style.add_modifier(Modifier::BOLD);
+                    }
+
+                    if is_staged && has_unstaged {
+                         style = style.add_modifier(Modifier::UNDERLINED);
+                    }
+
                     ListItem::new(Line::from(Span::styled(text, style)))
                 })
-                .collect()
+            .collect()
         };
 
         let files_title = match (self.focus, self.mode) {
@@ -583,9 +612,9 @@ impl App {
 
         let files_list = List::new(file_items).block(
             Block::default()
-                .title(files_title)
-                .borders(Borders::ALL)
-                .border_style(files_border_style),
+            .title(files_title)
+            .borders(Borders::ALL)
+            .border_style(files_border_style),
         );
         f.render_widget(files_list, files_area);
 
@@ -610,9 +639,9 @@ impl App {
         let log_widget = Paragraph::new(log_text)
             .block(
                 Block::default()
-                    .title(log_title)
-                    .borders(Borders::ALL)
-                    .border_style(log_border_style),
+                .title(log_title)
+                .borders(Borders::ALL)
+                .border_style(log_border_style),
             )
             .scroll((self.log_scroll, 0));
         f.render_widget(log_widget, log_area);
@@ -638,9 +667,9 @@ impl App {
         let r_widget = Paragraph::new(r_text)
             .block(
                 Block::default()
-                    .title(r_title)
-                    .borders(Borders::ALL)
-                    .border_style(r_border_style),
+                .title(r_title)
+                .borders(Borders::ALL)
+                .border_style(r_border_style),
             )
             .scroll((self.result_scroll, 0));
         f.render_widget(r_widget, result_area);
@@ -651,23 +680,49 @@ impl App {
                     .ok()
                     .and_then(|p| p.to_str().map(|s| s.to_string()))
                     .unwrap_or_else(|| "?".into());
-                Line::from(vec![
-                    Span::styled(
+
+                let file_path = self
+                    .files
+                    .get(self.selected_file)
+                    .map(|f| f.path.replace('"', ""));
+
+                let max_len = status_area.width.saturating_sub(40) as usize;
+                let file_display = file_path.map(|p| {
+                    if max_len == 0 || p.len() <= max_len {
+                        p
+                    } else {
+                        let start = p.len() - max_len;
+                        format!("…{}", &p[start..])
+                    }
+                });
+
+                let mut spans: Vec<Span> = Vec::new();
+                spans.push(Span::styled(
                         " -- NORMAL -- ",
                         Style::default().add_modifier(Modifier::REVERSED),
-                    ),
-                    Span::raw(" "),
-                    Span::styled(
+                ));
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(
                         self.status_info.clone(),
                         Style::default().fg(self.theme.accent),
-                    ),
-                    Span::raw("  "),
-                    Span::raw(cwd),
-                ])
+                ));
+                spans.push(Span::raw("  "));
+                spans.push(Span::raw(cwd));
+
+                if let Some(fp) = file_display {
+                    spans.push(Span::raw("  |  "));
+                    spans.push(Span::raw("file: "));
+                    spans.push(Span::styled(
+                            fp,
+                            Style::default().fg(self.theme.accent),
+                    ));
+                }
+
+                Line::from(spans)
             }
             Mode::CommandLine => Line::from(Span::styled(
-                format!(":{}", self.cmdline),
-                Style::default().add_modifier(Modifier::REVERSED),
+                    format!(":{}", self.cmdline),
+                    Style::default().add_modifier(Modifier::REVERSED),
             )),
         };
 

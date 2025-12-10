@@ -20,12 +20,43 @@ pub fn parse_lfs_mode(opt: Option<&String>) -> LfsMode {
     }
 }
 
+
+fn parse_args_line(s: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut escape = false;
+
+    for c in s.chars() {
+        if escape {
+            current.push(c);
+            escape = false;
+        } else if c == '\\' && in_quotes {
+            escape = true;
+        } else if c == '"' {
+            in_quotes = !in_quotes;
+        } else if c.is_whitespace() && !in_quotes {
+            if !current.is_empty() {
+                args.push(current.clone());
+                current.clear();
+            }
+        } else {
+            current.push(c);
+        }
+    }
+
+    if !current.is_empty() {
+        args.push(current);
+    }
+
+    args
+}
+
 pub struct CommandResult {
     pub log_lines: Vec<String>,
     pub result_lines: Vec<String>,
 }
 
-/// git + 必要なら LFS を実行（バックグラウンドスレッドから呼ばれる想定）
 pub fn run_git_with_lfs(
     git_path: String,
     args_str: String,
@@ -39,14 +70,21 @@ pub fn run_git_with_lfs(
 
     let repo_path = env::current_dir().unwrap_or_else(|_| ".".into());
     
-    // メイン git
-    let mut parts = args_str.split_whitespace();
-    let subcmd = parts.next().unwrap_or("");
-    let args: Vec<&str> = parts.collect();
+    let mut parts = parse_args_line(&args_str);
+
+    if parts.is_empty() {
+        result_lines.push("ERROR: empty git command".into());
+        return CommandResult {
+            log_lines,
+            result_lines,
+        };
+    }
+
+    let subcmd = parts.remove(0);
 
     let main_output = Command::new(&git_path)
-        .arg(subcmd)
-        .args(&args)
+        .arg(&subcmd)
+        .args(&parts)
         .current_dir(&repo_path)
         .output();
 
@@ -79,7 +117,6 @@ pub fn run_git_with_lfs(
         }
     }
 
-    // ここでキャンセルされていたら LFS はスキップ
     if cancel_flag.load(Ordering::Relaxed) {
         result_lines.push("<canceled before LFS stage>".into());
         return CommandResult {
@@ -88,7 +125,6 @@ pub fn run_git_with_lfs(
         };
     }
 
-    // LFS
     match lfs_mode {
         LfsMode::None => {}
         LfsMode::Fetch => {

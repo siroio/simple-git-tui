@@ -2,11 +2,15 @@ use std::{fs, path::PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+use crate::define::DEFAULT_CONFIG;
+
 #[derive(Deserialize, Debug)]
 pub struct Config {
     pub git_path: String,
     #[serde(default)]
     pub colors: ColorConfig,
+    #[serde(default)]
+    pub layout: LayoutConfig,
     pub commands: Vec<CommandConfig>,
 }
 
@@ -25,30 +29,22 @@ pub struct CommandConfig {
     pub lfs: Option<String>,
 }
 
-const DEFAULT_CONFIG: &str = r#"git_path = "git"
+#[derive(Deserialize, Debug)]
+pub struct LayoutConfig {
+    pub cmd_width: u16,
+    pub files_height: u16,
+    pub result_height: u16,
+}
 
-[colors]
-accent = "cyan"
-error = "red"
-background = "black"
-
-[[commands]]
-name = "Status"
-cmd  = "status -sb"
-
-[[commands]]
-name = "Graph"
-cmd  = "log --oneline --graph --decorate --all --color=always"
-
-[[commands]]
-name = "Fetch"
-cmd  = "fetch --all --prune"
-
-[[commands]]
-name = "Pull + LFS"
-cmd  = "pull"
-lfs  = "pull"
-"#;
+impl Default for LayoutConfig {
+    fn default() -> Self {
+        Self {
+            cmd_width: 32,
+            files_height: 7,
+            result_height: 5,
+        }
+    }
+}
 
 pub fn load_config() -> Result<Config> {
     let path = ensure_config_file()?;
