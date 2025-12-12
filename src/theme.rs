@@ -1,10 +1,12 @@
-use ratatui::style::Color;
 use crate::config::ColorConfig;
+use ratatui::style::Color;
 
 #[derive(Clone)]
 pub struct Theme {
     pub accent: Color,
+    #[allow(dead_code)]
     pub error: Color,
+    #[allow(dead_code)]
     pub background: Color,
 }
 
@@ -31,11 +33,7 @@ impl Theme {
                 .as_deref()
                 .map(parse_color)
                 .unwrap_or(Color::Cyan),
-            error: cfg
-                .error
-                .as_deref()
-                .map(parse_color)
-                .unwrap_or(Color::Red),
+            error: cfg.error.as_deref().map(parse_color).unwrap_or(Color::Red),
             background: cfg
                 .background
                 .as_deref()

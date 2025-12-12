@@ -1,6 +1,6 @@
-use std::{fs, path::PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::{fs, path::PathBuf};
 
 use crate::define::DEFAULT_CONFIG;
 
@@ -27,6 +27,8 @@ pub struct CommandConfig {
     pub cmd: String,
     #[serde(default)]
     pub lfs: Option<String>,
+    #[serde(default)]
+    pub interactive: bool,
 }
 
 #[derive(Deserialize, Debug)]
@@ -78,4 +80,3 @@ fn ensure_config_file() -> Result<PathBuf> {
 fn preferred_config_path() -> Option<PathBuf> {
     dirs_next::config_dir().map(|dir| dir.join("simple-git-tui").join("config.toml"))
 }
-

@@ -13,7 +13,7 @@ result_height = 5
 
 [[commands]]
 name = "Status"
-cmd  = "status -sb --color=always"
+cmd  = "status -sb"
 
 [[commands]]
 name = "Graph"
@@ -28,4 +28,3 @@ name = "Pull + LFS"
 cmd  = "pull"
 lfs  = "pull"
 "#;
-

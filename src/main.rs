@@ -1,16 +1,12 @@
 mod app;
-mod define;
 mod config;
+mod define;
 mod git;
 mod theme;
 
-use std::sync::{
-    atomic::AtomicBool,
-    mpsc,
-    Arc,
-};
+use std::sync::{Arc, atomic::AtomicBool, mpsc};
 
-use app::{App};
+use app::App;
 use config::load_config;
 use theme::Theme;
 

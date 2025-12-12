@@ -1,20 +1,20 @@
 use ansi_to_tui::IntoText;
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, List, ListItem, Paragraph},
-    Frame,
 };
 
-use super::{App, Focus, Mode};
+use super::view_model::{Focus, Mode, ViewModel};
 
-pub(super) fn draw(app: &mut App, f: &mut Frame<'_>) {
+pub(super) fn draw(vm: &mut ViewModel, f: &mut Frame<'_>) {
     let size = f.area();
 
-    let lw = app.config.layout.cmd_width as u16;
-    let fh = app.config.layout.files_height as u16;
-    let rh = app.config.layout.result_height as u16;
+    let lw = vm.layout().cmd_width as u16;
+    let fh = vm.layout().files_height as u16;
+    let rh = vm.layout().result_height as u16;
 
     let vertical = Layout::default()
         .direction(Direction::Vertical)
@@ -46,68 +46,72 @@ pub(super) fn draw(app: &mut App, f: &mut Frame<'_>) {
     let result_area = right_split[1];
     let status_area = vertical[1];
 
-    app.log_view_height = log_area.height.saturating_sub(2);
-    app.result_view_height = result_area.height.saturating_sub(2);
+    vm.update_viewport(
+        log_area.height.saturating_sub(2),
+        result_area.height.saturating_sub(2),
+    );
 
-    let cmd_items: Vec<ListItem> = app
-        .config
-        .commands
+    let theme = vm.theme();
+
+    let cmd_items: Vec<ListItem> = vm
+        .commands()
         .iter()
         .enumerate()
         .map(|(i, c)| {
-            let marker = if i == app.selected_cmd { "> " } else { "  " };
-            let style = if i == app.selected_cmd {
+            let marker = if i == vm.selected_cmd() { "> " } else { "  " };
+            let style = if i == vm.selected_cmd() {
                 Style::default()
-                    .fg(app.theme.accent)
+                    .fg(theme.accent)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
             ListItem::new(Line::from(Span::styled(
-                        format!("{}{}", marker, c.name),
-                        style,
+                format!("{}{}", marker, c.name),
+                style,
             )))
         })
-    .collect();
+        .collect();
 
-    let cmd_title = match (app.focus, app.mode) {
+    let cmd_title = match (vm.focus(), vm.mode()) {
         (Focus::Cmd, Mode::Normal) => "CMD [FOCUS]",
         (Focus::Cmd, Mode::CommandLine) => "CMD [FOCUS :]",
         _ => "CMD",
     };
 
-    let cmd_border_style = if matches!(app.focus, Focus::Cmd) {
-        Style::default().fg(app.theme.accent)
+    let cmd_border_style = if matches!(vm.focus(), Focus::Cmd) {
+        Style::default().fg(theme.accent)
     } else {
         Style::default()
     };
 
     let cmd_list = List::new(cmd_items).block(
         Block::default()
-        .title(cmd_title)
-        .borders(Borders::ALL)
-        .border_style(cmd_border_style),
+            .title(cmd_title)
+            .borders(Borders::ALL)
+            .border_style(cmd_border_style),
     );
     f.render_widget(cmd_list, cmd_area);
 
-    let file_items: Vec<ListItem> = if app.files.is_empty() {
+    let file_items: Vec<ListItem> = if vm.files().is_empty() {
         vec![ListItem::new(Line::from(Span::raw(
-                    "<clean or no changes>",
+            "<clean or no changes>",
         )))]
     } else {
-        app.files
+        vm.files()
             .iter()
             .enumerate()
             .map(|(i, fe)| {
-                let marker = if i == app.selected_file { "? " } else { "  " };
+                let marker = if i == vm.selected_file() { "? " } else { "  " };
                 let status = fe.status.as_str();
-
-                let clean_path = fe.path.replace('"', "");
-
-                let display_name = clean_path
-                    .rsplit(|c| c == '/' || c == '\\')
-                    .next()
-                    .unwrap_or(clean_path.as_str());
+                let display_name = {
+                    let name = fe.display_label();
+                    if name.is_empty() {
+                        fe.path.clone()
+                    } else {
+                        name
+                    }
+                };
 
                 let mut chars = status.chars();
                 let x = chars.next().unwrap_or(' ');
@@ -117,65 +121,64 @@ pub(super) fn draw(app: &mut App, f: &mut Frame<'_>) {
                 let has_unstaged = y != ' ';
 
                 let status_label = format!("[{}]", status);
-
                 let text = format!("{}{} {}", marker, status_label, display_name);
 
                 let mut style = Style::default();
 
                 if is_staged {
-                    style = style.fg(app.theme.accent);
+                    style = style.fg(theme.accent);
                 }
 
                 if is_untracked {
                     style = style.add_modifier(Modifier::ITALIC);
                 }
 
-                if i == app.selected_file {
+                if i == vm.selected_file() {
                     style = style.add_modifier(Modifier::BOLD);
                 }
 
                 if is_staged && has_unstaged {
-                     style = style.add_modifier(Modifier::UNDERLINED);
+                    style = style.add_modifier(Modifier::UNDERLINED);
                 }
 
                 ListItem::new(Line::from(Span::styled(text, style)))
             })
-        .collect()
+            .collect()
     };
 
-    let files_title = match (app.focus, app.mode) {
+    let files_title = match (vm.focus(), vm.mode()) {
         (Focus::Files, Mode::Normal) => "FILES [FOCUS] (s:stage/unstage)",
         (Focus::Files, Mode::CommandLine) => "FILES [FOCUS :]",
         _ => "FILES",
     };
 
-    let files_border_style = if matches!(app.focus, Focus::Files) {
-        Style::default().fg(app.theme.accent)
+    let files_border_style = if matches!(vm.focus(), Focus::Files) {
+        Style::default().fg(theme.accent)
     } else {
         Style::default()
     };
 
     let files_list = List::new(file_items).block(
         Block::default()
-        .title(files_title)
-        .borders(Borders::ALL)
-        .border_style(files_border_style),
+            .title(files_title)
+            .borders(Borders::ALL)
+            .border_style(files_border_style),
     );
     f.render_widget(files_list, files_area);
 
-    let log_title = match (app.focus, app.mode) {
+    let log_title = match (vm.focus(), vm.mode()) {
         (Focus::Log, Mode::Normal) => "LOG [FOCUS]",
         (Focus::Log, Mode::CommandLine) => "LOG [FOCUS :]",
         _ => "LOG",
     };
 
-    let log_border_style = if matches!(app.focus, Focus::Log) {
-        Style::default().fg(app.theme.accent)
+    let log_border_style = if matches!(vm.focus(), Focus::Log) {
+        Style::default().fg(theme.accent)
     } else {
         Style::default()
     };
 
-    let log_raw = app.log_lines.join("\n");
+    let log_raw = vm.log_lines().join("\n");
     let log_text: Text = log_raw
         .as_str()
         .into_text()
@@ -184,26 +187,26 @@ pub(super) fn draw(app: &mut App, f: &mut Frame<'_>) {
     let log_widget = Paragraph::new(log_text)
         .block(
             Block::default()
-            .title(log_title)
-            .borders(Borders::ALL)
-            .border_style(log_border_style),
+                .title(log_title)
+                .borders(Borders::ALL)
+                .border_style(log_border_style),
         )
-        .scroll((app.log_scroll, 0));
+        .scroll((vm.log_scroll(), 0));
     f.render_widget(log_widget, log_area);
 
-    let r_title = match (app.focus, app.mode) {
+    let r_title = match (vm.focus(), vm.mode()) {
         (Focus::Result, Mode::Normal) => "R [FOCUS]",
         (Focus::Result, Mode::CommandLine) => "R [FOCUS :]",
         _ => "R",
     };
 
-    let r_border_style = if matches!(app.focus, Focus::Result) {
-        Style::default().fg(app.theme.accent)
+    let r_border_style = if matches!(vm.focus(), Focus::Result) {
+        Style::default().fg(theme.accent)
     } else {
         Style::default()
     };
 
-    let r_raw = app.result_lines.join("\n");
+    let r_raw = vm.result_lines().join("\n");
     let r_text: Text = r_raw
         .as_str()
         .into_text()
@@ -212,23 +215,23 @@ pub(super) fn draw(app: &mut App, f: &mut Frame<'_>) {
     let r_widget = Paragraph::new(r_text)
         .block(
             Block::default()
-            .title(r_title)
-            .borders(Borders::ALL)
-            .border_style(r_border_style),
+                .title(r_title)
+                .borders(Borders::ALL)
+                .border_style(r_border_style),
         )
-        .scroll((app.result_scroll, 0));
+        .scroll((vm.result_scroll(), 0));
     f.render_widget(r_widget, result_area);
 
-    let status_line = match app.mode {
+    let status_line = match vm.mode() {
         Mode::Normal => {
             let cwd = std::env::current_dir()
                 .ok()
                 .and_then(|p| p.to_str().map(|s| s.to_string()))
                 .unwrap_or_else(|| "?".into());
 
-            let file_path = app
-                .files
-                .get(app.selected_file)
+            let file_path = vm
+                .files()
+                .get(vm.selected_file())
                 .map(|f| f.path.replace('"', ""));
 
             let max_len = status_area.width.saturating_sub(40) as usize;
@@ -237,19 +240,19 @@ pub(super) fn draw(app: &mut App, f: &mut Frame<'_>) {
                     p
                 } else {
                     let start = p.len() - max_len;
-                    format!("乧{}", &p[start..])
+                    format!("?{}", &p[start..])
                 }
             });
 
             let mut spans: Vec<Span> = Vec::new();
             spans.push(Span::styled(
-                    " -- NORMAL -- ",
-                    Style::default().add_modifier(Modifier::REVERSED),
+                " -- NORMAL -- ",
+                Style::default().add_modifier(Modifier::REVERSED),
             ));
             spans.push(Span::raw(" "));
             spans.push(Span::styled(
-                    app.status_info.clone(),
-                    Style::default().fg(app.theme.accent),
+                vm.status_summary(),
+                Style::default().fg(theme.accent),
             ));
             spans.push(Span::raw("  "));
             spans.push(Span::raw(cwd));
@@ -257,17 +260,14 @@ pub(super) fn draw(app: &mut App, f: &mut Frame<'_>) {
             if let Some(fp) = file_display {
                 spans.push(Span::raw("  |  "));
                 spans.push(Span::raw("file: "));
-                spans.push(Span::styled(
-                        fp,
-                        Style::default().fg(app.theme.accent),
-                ));
+                spans.push(Span::styled(fp, Style::default().fg(theme.accent)));
             }
 
             Line::from(spans)
         }
         Mode::CommandLine => Line::from(Span::styled(
-                format!(":{}", app.cmdline),
-                Style::default().add_modifier(Modifier::REVERSED),
+            format!(":{}", vm.cmdline()),
+            Style::default().add_modifier(Modifier::REVERSED),
         )),
     };
 
