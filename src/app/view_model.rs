@@ -10,7 +10,10 @@ use std::thread;
 use crossterm::{
     event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{
+        Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+        enable_raw_mode,
+    },
 };
 
 use crate::config::{CommandConfig, Config, LayoutConfig};
@@ -397,7 +400,7 @@ impl ViewModel {
 
             {
                 let mut stdout = std::io::stdout();
-                execute!(stdout, EnterAlternateScreen)?;
+                execute!(stdout, EnterAlternateScreen, Clear(ClearType::All))?;
             }
             enable_raw_mode().ok();
 

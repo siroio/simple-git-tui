@@ -24,7 +24,12 @@ name = "Fetch"
 cmd  = "fetch --all --prune"
 
 [[commands]]
-name = "Pull + LFS"
+name = "Pull"
 cmd  = "pull"
 lfs  = "pull"
+
+[[commands]]
+name = "Commit"
+cmd = "commit"
+interactive = true
 "#;
