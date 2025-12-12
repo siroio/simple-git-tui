@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::env;
+use std::path::PathBuf;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -19,7 +20,7 @@ use crossterm::{
 use crate::config::{CommandConfig, Config, LayoutConfig};
 use crate::git::{
     CommandResult, LfsMode, RepoFile, RepoStatus, load_repo_status, parse_args_line,
-    parse_lfs_mode, run_git_with_lfs,
+    parse_lfs_mode, repo_root, run_git_with_lfs,
 };
 use crate::theme::Theme;
 
@@ -56,6 +57,7 @@ pub struct ViewModel {
     result_view_height: u16,
     cmdline: String,
     needs_full_redraw: bool,
+    repo_root: PathBuf,
     tx: Sender<UiMessage>,
     rx: Receiver<UiMessage>,
     is_running: bool,
@@ -71,7 +73,9 @@ impl ViewModel {
         rx: Receiver<UiMessage>,
         cancel_flag: Arc<AtomicBool>,
     ) -> Self {
-        let status = load_repo_status(&config.git_path, &current_repo_path());
+        let cwd = current_repo_path();
+        let repo_root = repo_root(&config.git_path, &cwd);
+        let status = load_repo_status(&config.git_path, &repo_root);
         Self {
             config,
             theme,
@@ -87,6 +91,7 @@ impl ViewModel {
             result_view_height: 1,
             cmdline: String::new(),
             needs_full_redraw: false,
+            repo_root,
             tx,
             rx,
             is_running: false,
@@ -325,6 +330,8 @@ impl ViewModel {
         let x = chars.next().unwrap_or(' ');
         let is_untracked = status == "??";
         let is_staged = x != ' ' && !is_untracked;
+        let y = chars.next().unwrap_or(' ');
+        let has_unstaged_delete = y == 'D';
         let operands = entry
             .operands()
             .iter()
@@ -335,7 +342,12 @@ impl ViewModel {
         let cmd = if is_staged {
             format!("restore --staged -- {}", operands)
         } else {
-            format!("add -- {}", operands)
+            if has_unstaged_delete {
+                // Deleted in working tree: use -u so git stages the removal even when file is gone.
+                format!("add -u -- {}", operands)
+            } else {
+                format!("add -- {}", operands)
+            }
         };
         self.run_command(cmd, LfsMode::None, false);
     }
@@ -364,9 +376,11 @@ impl ViewModel {
         let tx = self.tx.clone();
         let git_path = self.config.git_path.clone();
         let cancel_flag = self.cancel_flag.clone();
+        let repo_path = self.repo_root.clone();
 
         thread::spawn(move || {
-            let res = run_git_with_lfs(git_path, args_str, lfs_mode, cancel_flag.clone());
+            let res =
+                run_git_with_lfs(git_path, args_str, lfs_mode, cancel_flag.clone(), repo_path);
             if !cancel_flag.load(Ordering::Relaxed) {
                 let _ = tx.send(UiMessage::CommandFinished(res));
             }
@@ -385,7 +399,7 @@ impl ViewModel {
         self.result_lines = vec![format!("$ git {}", args_str)];
 
         let git_path = self.config.git_path.clone();
-        let repo = current_repo_path();
+        let repo = self.repo_root.clone();
         let args = parse_args_line(&args_str);
 
         let exit_code = (|| -> Result<i32> {
@@ -422,7 +436,7 @@ impl ViewModel {
     }
 
     fn refresh_repo_status(&mut self) {
-        self.status = load_repo_status(&self.config.git_path, &current_repo_path());
+        self.status = load_repo_status(&self.config.git_path, &self.repo_root);
         if self.selected_file >= self.status.files.len() && !self.status.files.is_empty() {
             self.selected_file = self.status.files.len() - 1;
         }

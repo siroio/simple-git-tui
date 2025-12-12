@@ -20,13 +20,14 @@ name = "Graph"
 cmd  = "log --oneline --graph --decorate --all --color=always"
 
 [[commands]]
-name = "Fetch"
-cmd  = "fetch --all --prune"
-
-[[commands]]
 name = "Pull"
 cmd  = "pull"
 lfs  = "pull"
+
+[[commands]]
+name = "Push"
+cmd = "push"
+lfs = "push"
 
 [[commands]]
 name = "Commit"

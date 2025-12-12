@@ -1,5 +1,4 @@
-use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{
     Arc,
@@ -171,18 +170,34 @@ pub struct CommandResult {
     pub result_lines: Vec<String>,
 }
 
+pub fn repo_root(git_path: &str, cwd: &Path) -> PathBuf {
+    Command::new(git_path)
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .current_dir(cwd)
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                Some(PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()))
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| cwd.to_path_buf())
+}
+
 pub fn run_git_with_lfs(
     git_path: String,
     args_str: String,
     lfs_mode: LfsMode,
     cancel_flag: Arc<AtomicBool>,
+    repo_path: PathBuf,
 ) -> CommandResult {
     let mut log_lines = Vec::new();
     let mut result_lines = Vec::new();
 
     result_lines.push(format!("$ git {}", args_str));
-
-    let repo_path = env::current_dir().unwrap_or_else(|_| ".".into());
 
     let mut parts = parse_args_line(&args_str);
 
