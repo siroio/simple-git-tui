@@ -55,6 +55,7 @@ pub struct ViewModel {
     log_view_height: u16,
     result_view_height: u16,
     cmdline: String,
+    needs_full_redraw: bool,
     tx: Sender<UiMessage>,
     rx: Receiver<UiMessage>,
     is_running: bool,
@@ -85,6 +86,7 @@ impl ViewModel {
             log_view_height: 1,
             result_view_height: 1,
             cmdline: String::new(),
+            needs_full_redraw: false,
             tx,
             rx,
             is_running: false,
@@ -415,6 +417,7 @@ impl ViewModel {
         }
 
         self.is_running = false;
+        self.needs_full_redraw = true;
         self.refresh_repo_status();
     }
 
@@ -487,6 +490,12 @@ impl ViewModel {
 
     pub fn cmdline(&self) -> &str {
         &self.cmdline
+    }
+
+    pub fn take_full_redraw(&mut self) -> bool {
+        let flag = self.needs_full_redraw;
+        self.needs_full_redraw = false;
+        flag
     }
 
     fn requires_interactive(&self, args_str: &str, cfg: Option<&CommandConfig>) -> bool {
