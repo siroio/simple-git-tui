@@ -11,6 +11,8 @@ pub struct Config {
     pub colors: ColorConfig,
     #[serde(default)]
     pub layout: LayoutConfig,
+    #[serde(default)]
+    pub files_diff_cmd: Option<String>,
     pub commands: Vec<CommandConfig>,
 }
 

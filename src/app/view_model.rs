@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::env;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -63,6 +64,7 @@ pub struct ViewModel {
     is_running: bool,
     cancel_flag: Arc<AtomicBool>,
     status: RepoStatus,
+    pending_discard: Option<usize>,
 }
 
 impl ViewModel {
@@ -97,6 +99,7 @@ impl ViewModel {
             is_running: false,
             cancel_flag,
             status,
+            pending_discard: None,
         }
     }
 
@@ -145,6 +148,7 @@ impl ViewModel {
         if let KeyCode::Char(':') = key.code {
             self.mode = Mode::CommandLine;
             self.cmdline.clear();
+            self.pending_discard = None;
             return Ok(false);
         }
 
@@ -154,6 +158,7 @@ impl ViewModel {
 
         match key.code {
             KeyCode::Char('h') => {
+                self.pending_discard = None;
                 self.focus = match self.focus {
                     Focus::Cmd => Focus::Cmd,
                     Focus::Files => Focus::Cmd,
@@ -163,6 +168,7 @@ impl ViewModel {
                 return Ok(false);
             }
             KeyCode::Char('l') => {
+                self.pending_discard = None;
                 self.focus = match self.focus {
                     Focus::Cmd => Focus::Files,
                     Focus::Files => Focus::Log,
@@ -189,6 +195,7 @@ impl ViewModel {
             KeyCode::Esc => {
                 self.mode = Mode::Normal;
                 self.cmdline.clear();
+                self.pending_discard = None;
             }
             KeyCode::Enter => {
                 let line = self.cmdline.trim().to_string();
@@ -243,22 +250,41 @@ impl ViewModel {
     }
 
     fn handle_file_keys(&mut self, key: KeyEvent) -> anyhow::Result<()> {
+        let mut selection_changed = false;
         match key.code {
             KeyCode::Char('j') => {
                 if self.selected_file + 1 < self.status.files.len() {
                     self.selected_file += 1;
+                    selection_changed = true;
                 }
             }
             KeyCode::Char('k') => {
                 if self.selected_file > 0 {
                     self.selected_file -= 1;
+                    selection_changed = true;
                 }
             }
             KeyCode::Char('s') => {
+                self.pending_discard = None;
                 self.toggle_stage_selected_file();
             }
-            _ => {}
+            KeyCode::Char('d') => {
+                self.pending_discard = None;
+                self.show_diff_for_selected_file(false);
+            }
+            KeyCode::Char('x') => {
+                self.handle_discard_key();
+            }
+            _ => {
+                self.pending_discard = None;
+            }
         }
+
+        if selection_changed {
+            self.pending_discard = None;
+            self.show_diff_for_selected_file(true);
+        }
+
         Ok(())
     }
 
@@ -332,12 +358,11 @@ impl ViewModel {
         let is_staged = x != ' ' && !is_untracked;
         let y = chars.next().unwrap_or(' ');
         let has_unstaged_delete = y == 'D';
-        let operands = entry
-            .operands()
-            .iter()
-            .map(|p| format!("\"{}\"", p))
-            .collect::<Vec<_>>()
-            .join(" ");
+        let operands = Self::quoted_operands(entry);
+
+        if operands.is_empty() {
+            return;
+        }
 
         let cmd = if is_staged {
             format!("restore --staged -- {}", operands)
@@ -352,7 +377,189 @@ impl ViewModel {
         self.run_command(cmd, LfsMode::None, false);
     }
 
+    fn handle_discard_key(&mut self) {
+        if self.status.files.is_empty() {
+            self.pending_discard = None;
+            return;
+        }
+
+        if self.pending_discard == Some(self.selected_file) {
+            self.pending_discard = None;
+            self.discard_selected_file();
+            return;
+        }
+
+        self.pending_discard = Some(self.selected_file);
+        let entry = &self.status.files[self.selected_file];
+        let label = entry.display_label();
+        self.result_lines = vec![format!(
+            "Discard changes to \"{}\"? (press x again to confirm, any other key cancels)",
+            label
+        )];
+        self.result_scroll = 0;
+    }
+
+    fn discard_selected_file(&mut self) {
+        if self.status.files.is_empty() {
+            return;
+        }
+        let entry = &self.status.files[self.selected_file];
+        let operands = Self::quoted_operands(entry);
+        if operands.is_empty() {
+            return;
+        }
+
+        let cmd = if entry.status == "??" {
+            format!("clean -fd -- {}", operands)
+        } else {
+            format!("restore --staged --worktree -- {}", operands)
+        };
+        self.run_command(cmd, LfsMode::None, false);
+    }
+
+    fn show_diff_for_selected_file(&mut self, is_auto: bool) {
+        if self.status.files.is_empty() {
+            return;
+        }
+        if self.is_running {
+            if !is_auto {
+                self.result_lines
+                    .push("WARN: cannot show diff while git is running".into());
+            }
+            return;
+        }
+
+        let entry = &self.status.files[self.selected_file];
+        let operands = Self::clean_operands(entry);
+        if operands.is_empty() {
+            if !is_auto {
+                self.result_lines
+                    .push("WARN: could not resolve file path for diff".into());
+            }
+            return;
+        }
+
+        let (args, cmd_label) = if entry.status == "??" {
+            let dev_null: String = if cfg!(windows) { "NUL".into() } else { "/dev/null".into() };
+            let mut args = vec!["diff".into(), "--no-index".into(), "--".into(), dev_null.clone()];
+            args.extend(operands.clone());
+            let pretty_label = format!(
+                "git diff --no-index -- {} {}",
+                dev_null,
+                operands.join(" ")
+            );
+            (args, pretty_label)
+        } else {
+            self.build_diff_command(&operands)
+        };
+
+        let output = Command::new(&self.config.git_path)
+            .args(&args)
+            .current_dir(&self.repo_root)
+            .output();
+
+        match output {
+            Ok(o) => {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                let stderr = String::from_utf8_lossy(&o.stderr);
+
+                self.log_lines = if stdout.is_empty() {
+                    vec!["<no diff output>".into()]
+                } else {
+                    stdout.lines().map(|s| s.to_owned()).collect()
+                };
+
+                self.result_lines = vec![format!("$ {}", cmd_label)];
+                self.result_lines
+                    .push(format!("git exit code: {}", o.status.code().unwrap_or(-1)));
+                if !stderr.is_empty() {
+                    self.result_lines.push("--- git stderr ---".into());
+                    self.result_lines
+                        .extend(stderr.lines().map(|s| s.to_owned()));
+                }
+                self.log_scroll = 0;
+                self.result_scroll = 0;
+            }
+            Err(e) => {
+                self.log_lines = vec!["<no diff output>".into()];
+                self.result_lines = vec![format!("$ {}", cmd_label)];
+                self.result_lines
+                    .push(format!("ERROR: failed to run git diff: {}", e));
+                self.log_scroll = 0;
+                self.result_scroll = 0;
+            }
+        }
+    }
+
+    fn build_diff_command(&self, operands: &[String]) -> (Vec<String>, String) {
+        let raw = self
+            .config
+            .files_diff_cmd
+            .clone()
+            .unwrap_or_else(|| "diff HEAD --".into());
+        let mut args = parse_args_line(&raw);
+        if !args.is_empty() && args[0] == "git" {
+            args.remove(0);
+        }
+        if args.is_empty() {
+            args = vec!["diff".into(), "HEAD".into(), "--".into()];
+        }
+
+        let mut final_args = Vec::new();
+        let mut inserted_files = false;
+        for arg in args {
+            if arg == "{files}" {
+                final_args.extend_from_slice(operands);
+                inserted_files = true;
+            } else {
+                final_args.push(arg);
+            }
+        }
+
+        if !inserted_files {
+            if !final_args.iter().any(|a| a == "--") {
+                final_args.push("--".into());
+            }
+            final_args.extend_from_slice(operands);
+        }
+
+        let label = format!(
+            "git {}",
+            final_args
+                .iter()
+                .map(|a| {
+                    if a.contains(' ') {
+                        format!("\"{}\"", a)
+                    } else {
+                        a.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+
+        (final_args, label)
+    }
+
+    fn clean_operands(entry: &RepoFile) -> Vec<String> {
+        entry
+            .operands()
+            .into_iter()
+            .map(|p| p.trim_matches('"').to_string())
+            .collect()
+    }
+
+    fn quoted_operands(entry: &RepoFile) -> String {
+        entry
+            .operands()
+            .iter()
+            .map(|p| format!("\"{}\"", p.trim_matches('"')))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     fn run_command(&mut self, args_str: String, lfs_mode: LfsMode, interactive: bool) {
+        self.pending_discard = None;
         if interactive {
             self.run_command_interactive(args_str);
         } else {
@@ -443,6 +650,7 @@ impl ViewModel {
         if self.status.files.is_empty() {
             self.selected_file = 0;
         }
+        self.pending_discard = None;
     }
 
     pub fn update_viewport(&mut self, log_height: u16, result_height: u16) {

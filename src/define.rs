@@ -11,6 +11,8 @@ cmd_width = 32
 files_height = 7
 result_height = 5
 
+files_diff_cmd = "diff HEAD --"
+
 [[commands]]
 name = "Status"
 cmd  = "status -sb"
