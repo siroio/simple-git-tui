@@ -61,6 +61,7 @@ impl App {
             if self.view_model.take_full_redraw() {
                 terminal.clear()?;
             }
+            self.view_model.tick();
             terminal.draw(|f| view::draw(&mut self.view_model, f))?;
             if event::poll(Duration::from_millis(50))? {
                 if let Event::Key(key) = event::read()? {

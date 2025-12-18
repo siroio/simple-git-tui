@@ -8,6 +8,7 @@ use std::sync::{
     mpsc::{Receiver, Sender},
 };
 use std::thread;
+use std::time::{Duration, Instant};
 
 use crossterm::{
     event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
@@ -24,6 +25,8 @@ use crate::git::{
     parse_lfs_mode, repo_root, run_git_with_lfs,
 };
 use crate::theme::Theme;
+
+const SPINNER_FRAMES: [char; 4] = ['|', '/', '-', '\\'];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -62,6 +65,9 @@ pub struct ViewModel {
     tx: Sender<UiMessage>,
     rx: Receiver<UiMessage>,
     is_running: bool,
+    running_cmd: Option<String>,
+    spinner_index: usize,
+    spinner_last_tick: Instant,
     cancel_flag: Arc<AtomicBool>,
     status: RepoStatus,
     pending_discard: Option<usize>,
@@ -97,6 +103,9 @@ impl ViewModel {
             tx,
             rx,
             is_running: false,
+            running_cmd: None,
+            spinner_index: 0,
+            spinner_last_tick: Instant::now(),
             cancel_flag,
             status,
             pending_discard: None,
@@ -110,7 +119,7 @@ impl ViewModel {
                     if self.cancel_flag.load(Ordering::Relaxed) {
                         continue;
                     }
-                    self.is_running = false;
+                    self.finish_running();
                     self.log_lines = res.log_lines;
                     self.result_lines = res.result_lines;
                     self.log_scroll = 0;
@@ -136,7 +145,7 @@ impl ViewModel {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             if self.is_running {
                 self.cancel_flag.store(true, Ordering::Relaxed);
-                self.is_running = false;
+                self.finish_running();
                 self.log_lines.push("<canceled by user>".into());
                 self.result_lines
                     .push("canceled by user (git process may still finish in background)".into());
@@ -440,14 +449,20 @@ impl ViewModel {
         }
 
         let (args, cmd_label) = if entry.status == "??" {
-            let dev_null: String = if cfg!(windows) { "NUL".into() } else { "/dev/null".into() };
-            let mut args = vec!["diff".into(), "--no-index".into(), "--".into(), dev_null.clone()];
+            let dev_null: String = if cfg!(windows) {
+                "NUL".into()
+            } else {
+                "/dev/null".into()
+            };
+            let mut args = vec![
+                "diff".into(),
+                "--no-index".into(),
+                "--".into(),
+                dev_null.clone(),
+            ];
             args.extend(operands.clone());
-            let pretty_label = format!(
-                "git diff --no-index -- {} {}",
-                dev_null,
-                operands.join(" ")
-            );
+            let pretty_label =
+                format!("git diff --no-index -- {} {}", dev_null, operands.join(" "));
             (args, pretty_label)
         } else {
             self.build_diff_command(&operands)
@@ -573,8 +588,7 @@ impl ViewModel {
                 .push("WARN: already running command".into());
             return;
         }
-        self.is_running = true;
-        self.cancel_flag.store(false, Ordering::Relaxed);
+        self.start_running(&args_str);
         self.log_lines = vec!["<running...>".into()];
         self.result_lines = vec![format!("$ git {}", args_str), "running...".into()];
         self.log_scroll = 0;
@@ -601,7 +615,7 @@ impl ViewModel {
             return;
         }
 
-        self.is_running = true;
+        self.start_running(&args_str);
         self.log_lines = vec!["<interactive command: terminal will switch>".into()];
         self.result_lines = vec![format!("$ git {}", args_str)];
 
@@ -637,7 +651,7 @@ impl ViewModel {
                 .push(format!("ERROR: failed interactive git: {e}")),
         }
 
-        self.is_running = false;
+        self.finish_running();
         self.needs_full_redraw = true;
         self.refresh_repo_status();
     }
@@ -676,6 +690,15 @@ impl ViewModel {
 
     pub fn mode(&self) -> Mode {
         self.mode
+    }
+
+    pub fn running_indicator(&self) -> Option<(char, &str)> {
+        if !self.is_running {
+            return None;
+        }
+        let spinner = SPINNER_FRAMES[self.spinner_index];
+        let cmd = self.running_cmd.as_deref().unwrap_or("<unknown>");
+        Some((spinner, cmd))
     }
 
     pub fn selected_cmd(&self) -> usize {
@@ -742,6 +765,31 @@ impl ViewModel {
             .any(|p| p == "-m" || p == "--message" || p.starts_with("--message="));
 
         !has_message_flag
+    }
+
+    pub fn tick(&mut self) {
+        if !self.is_running {
+            return;
+        }
+
+        if self.spinner_last_tick.elapsed() >= Duration::from_millis(120) {
+            self.spinner_last_tick = Instant::now();
+            self.spinner_index = (self.spinner_index + 1) % SPINNER_FRAMES.len();
+        }
+    }
+
+    fn start_running(&mut self, args_str: &str) {
+        self.is_running = true;
+        self.running_cmd = Some(args_str.to_string());
+        self.spinner_index = 0;
+        self.spinner_last_tick = Instant::now();
+        self.cancel_flag.store(false, Ordering::Relaxed);
+    }
+
+    fn finish_running(&mut self) {
+        self.is_running = false;
+        self.running_cmd = None;
+        self.spinner_index = 0;
     }
 }
 

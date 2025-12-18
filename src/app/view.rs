@@ -102,7 +102,7 @@ pub(super) fn draw(vm: &mut ViewModel, f: &mut Frame<'_>) {
             .iter()
             .enumerate()
             .map(|(i, fe)| {
-                let marker = if i == vm.selected_file() { "? " } else { "  " };
+                let marker = if i == vm.selected_file() { "> " } else { "  " };
                 let status = fe.status.as_str();
                 let display_name = {
                     let name = fe.display_label();
@@ -256,6 +256,17 @@ pub(super) fn draw(vm: &mut ViewModel, f: &mut Frame<'_>) {
             ));
             spans.push(Span::raw("  "));
             spans.push(Span::raw(cwd));
+
+            if let Some((spinner, cmd)) = vm.running_indicator() {
+                let mut label = format!("{} git {}", spinner, cmd);
+                let max_len = status_area.width.saturating_sub(8) as usize;
+                if max_len > 3 && label.len() > max_len {
+                    let shortened: String = label.chars().take(max_len - 3).collect();
+                    label = format!("{}...", shortened);
+                }
+                spans.push(Span::raw("  |  "));
+                spans.push(Span::styled(label, Style::default().fg(theme.accent)));
+            }
 
             if let Some(fp) = file_display {
                 spans.push(Span::raw("  |  "));
